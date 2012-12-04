@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import em
 import kmedoids
 import math
 import matplotlib.pyplot as plt
@@ -22,6 +23,9 @@ def main():
                       help="number of clusters to look for")
     parser.add_option("-f", "--file", dest="file", type="string", metavar="FILE",
                       help="file containing the data to cluster (supported types: splunk queries and x,y coordinates)")
+    parser.add_option("-e", "--em", 
+                      action="store_true", default=False, dest="em",
+                      help="run expectation-maximization on a data in FILE (defaults to n data points of four Gaussian x,y clusters)")
     parser.add_option("-m", "--kmedoids", 
                       action="store_true", default=False, dest="kmedoids",
                       help="run k-medoids on a data in FILE (defaults to n data points of four Gaussian x,y clusters)")
@@ -42,24 +46,40 @@ def main():
         r = (read_points if options.euclidean else read_queries)
     k = (4 if options.k is None else options.k)
     
-    d = build_euclidean_distance_matrix if options.euclidean \
-                                        else build_tree_edit_distance_matrix
     
     clusterer = kmedoids.cluster
-    if options.kmedoids and not options.spectral:
-        clusterer = kmedoids.cluster
-    elif options.spectral and not options.kmedoids:
-        clusterer = spectral.cluster
-    else:
-        print "Please pick one clustering method."
-        exit()
     
-    # TODO(salspaugh): Data input error handling.
+    if options.em and not options.kmedoids and not options.spectral:
+        clusterer = em.cluster
+        pdf = em.isotropic_bivariate_normal_pdf if options.euclidean else None
+        param_init = em.isotropic_bivariate_normal_parameter_init \
+                                if options.euclidean else None
+        param_update = em.isotropic_bivariate_normal_parameter_update \
+                                if options.euclidean else None
+    
+    else:
+        d = build_euclidean_distance_matrix if options.euclidean \
+                                            else build_tree_edit_distance_matrix
+        if options.kmedoids and not options.spectral and not options.em:
+            clusterer = kmedoids.cluster
+        elif options.spectral and not options.kmedoids and not options.em:
+            clusterer = spectral.cluster
+        else:
+            print "Please pick one clustering method."
+            exit()
     
     distances = data = get_data(datafile=f, datareader=r)
-    if not precomputed_distances: # TODO(salspaugh): Take distances file as an argument.
-        distances = compute_distances(data, distancer=d, savefile='distances.npy') 
-    cluster(data, distances, clusterer, k=k, plot=options.euclidean)
+    if not options.em:
+        if not precomputed_distances: # TODO(salspaugh): Take distances file as an argument.
+            distances = compute_distances(data, distancer=d, savefile='distances.npy') 
+        clusters, centers = clusterer(distances, k=k)
+    else:
+        clusters, centers = clusterer(data, pdf, param_init, param_update, k=k)
+    
+    output_results(data, clusters, centers, plot=options.euclidean)
+   
+    # TODO(salspaugh): Clean up option parsing!
+    # TODO(salspaugh): Data input error handling.
 
 def is_npy(filename):
     return (filename[filename.rfind('.'):] == '.npy')
@@ -74,7 +94,7 @@ def read_points(datafile):
             (x,y) = line.split(',')
             point = (float(x), float(y))
             points.append(point)
-    return points
+    return np.array(points)
 
 def generate_random_point_clusters(datafile, n=TEST_POINTS): 
     points = []
@@ -142,11 +162,11 @@ def compute_distances(data, distancer=build_euclidean_distance_matrix, savefile=
         np.save(savefile, distances)    
     return distances
 
-def cluster(data, distances, clusterer, k=4, plot=False):
-    clusters, centers = clusterer(distances, k=k)
-    print_results(data, clusters) # TODO: Check if this works for queries.
-    if plot:
-        plot_results(data, clusters, centers)
+def output_results(data, clusters, centers, plot=False):
+    pass
+    #print_results(data, clusters) # TODO: Check if this works for queries.
+    #if plot:
+    #    plot_results(data, clusters, centers)
 
 def print_results(data, clusters):
     for i in range(len(data)):

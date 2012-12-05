@@ -9,11 +9,17 @@ CONVERGENCE_THRESHOLD = 1e-4
 VERY_SMALL_NUMBER = -1e12
 
 def cluster(data, pdf, init_params, update_params, k=4):
+    
     log_likelihood, posterior, parameters = expectation_maximization(data, pdf, init_params, update_params, k)
     
-    # TODO(salspaugh): some stuff to make the clusters
+    # TODO(salspaugh): The "centers" computed below are not actually central. 
+    # It's obvious if you think about it.
+   
     clusters = np.apply_along_axis(np.argmax, 1, posterior) 
-    centers = [0.]*k
+    centers = [np.argmax(posterior[:,c]) for c in range(k)]
+    for c in range(k):
+        clusters[clusters == c] = centers[c]
+    print centers
     return clusters, centers
 
 def expectation_maximization(data, pdf, init_parameters, update_parameters, k):
@@ -42,8 +48,12 @@ def expectation_maximization(data, pdf, init_parameters, update_parameters, k):
      
     return curr_ll, posterior, parameters 
 
-def initialize_prior(k):
-    return np.ones(k) / k # uniform
+def initialize_prior(k, uniform=True):
+    if uniform:
+        return np.ones(k) / k
+    else: # Sometimes uniform will get you stuck? Or so I've read.
+        prior = np.random.rand(k)
+        return prior / prior.sum()
 
 def do_EM_iteration(k, data, emissions, prior, posterior, pdf, update_parameters, *parameters):
 
@@ -104,7 +114,38 @@ def converged(old_log_likelihood, new_log_likelihood):
     return (new_log_likelihood - old_log_likelihood < CONVERGENCE_THRESHOLD)
 
 # Distribution-specific functions:
-def isotropic_bivariate_normal_parameter_init(k, d, *parameters):
+
+# Multinomial
+def multinomial_parameter_init(k, d):
+    p = np.random.rand(k,d,d)
+    # p[x,y,k] = P_k(x|y) = prob of seeing x after y in class k
+    # the columns should sum to unity for each class
+    for c in range(k):
+        for j in range(d): # normalize across columns
+            p[c,:,j] = p[c,:,j] / p[c,:,j].sum() 
+    return p
+
+def multinomial_pdf(counts, cls, *parameters):
+    p = parameters[0][cls]
+    # counts[x,y] = c when x appears after y c times in observation  
+    return np.exp(p, counts.reshape(d,d)).prod() 
+
+def multinomial_parameter_update(data, prior, posterior, *parameters):
+    n = data.shape[0]
+    k = prior.shape[0]
+    
+    p = parameters[0]
+
+    for cls_idx in range(k):
+        prob = np.zeros((d,d))
+        for obs_idx in range(n):
+            prob += (data[obs_idx].reshape(d,d))*(posterior[obs_idx][cls_idx])
+        p[k] = prob     
+        for j in range(d): # normalize across columns
+            p[k,:,j] = p[k,:,j] / p[k,:,j].sum()
+
+# Isotropic Bivariate Normal
+def isotropic_bivariate_normal_parameter_init(k, d):
     mu = np.zeros((k,d))
     mu[0,:] = (0.15, 0.231)
     mu[1,:] = (-0.121, 0.435)

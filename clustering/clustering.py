@@ -139,14 +139,13 @@ def euclidean_dist(a, b):
 
 def build_distance_matrix(data, distfn):
     m = len(data)
-    distances = np.matrix([[0.]*m]*m)
+    distances = np.zeros((m,m))
     i = j = 0.
     for i in range(m):
         for j in range(i+1, m): # The distance matrix is symmetric.
             p = data[i]
             q = data[j]
             distances[i,j] = distances[j,i] = distfn(p, q)
-    print "Done computing queries."
     return distances
 
 def get_data(datafile=TEST_FILE, datareader=read_points):
@@ -164,26 +163,26 @@ def compute_distances(data, distancer=build_euclidean_distance_matrix, savefile=
 
 def output_results(data, clusters, centers, plot=False):
     pass
-    #print_results(data, clusters) # TODO: Check if this works for queries.
-    #if plot:
-    #    plot_results(data, clusters, centers)
+    print_results(data, clusters) # TODO: Check if this works for queries.
+    if plot:
+        plot_results(data, clusters, centers)
 
 def print_results(data, clusters):
     for i in range(len(data)):
         print clusters[i], data[i]
 
-def plot_results(data, clusters, medoids):
+def plot_results(data, cluster_idxs, medoid_idxs):
     data = np.array(data)
     colors = ['b', 'g', 'r', 'c', 'm', 'y']
-    cluster_count = 0
-    for medoid in medoids:
-        cluster = np.where(clusters == medoid)[0]
-        print cluster
-        x = [pt[0] for pt in data[cluster]]
-        y = [pt[1] for pt in data[cluster]]
-        plt.plot(x, y, color=colors[cluster_count], marker='o', linestyle='None')
-        #plt.plot(data[medoid][0], data[medoid][1], color='k', marker='o', linestyle='None')
-        cluster_count += 1
+    cluster_idx_count = 0
+    for medoid_idx in medoid_idxs:
+        cluster_idx = np.where(cluster_idxs == medoid_idx)[0]
+        print cluster_idx
+        x = [pt[0] for pt in data[cluster_idx]]
+        y = [pt[1] for pt in data[cluster_idx]]
+        plt.plot(x, y, color=colors[cluster_idx_count], marker='o', linestyle='None')
+        plt.plot(data[medoid_idx][0], data[medoid_idx][1], color='k', marker='o', linestyle='None')
+        cluster_idx_count += 1
     plt.savefig('clusters.png')
 
 if __name__ == "__main__":

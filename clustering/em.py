@@ -13,7 +13,6 @@ np.seterr(all='raise')
 def cluster(data, pdf, init_params, update_params, k=4):
     
     log_likelihood, posterior, parameters = expectation_maximization(data, pdf, init_params, update_params, k)
-
     # TODO(salspaugh): The "centers" computed below are not actually central. 
     # It's obvious if you think about it.
    

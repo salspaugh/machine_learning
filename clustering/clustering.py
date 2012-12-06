@@ -24,7 +24,9 @@ def main():
 
     k = (4 if options.k is None else options.k)
     f = (TEST_FILE if options.file is None else options.file)
-    
+    i = options.intermediate_in
+    o = options.intermediate_out
+
     em_gaussian = (options.em and options.euclidean)
     em_multinomial = (options.em and not options.euclidean)
 
@@ -33,7 +35,6 @@ def main():
     if em_multinomial:
         clusterer_selected = True
         clusterer = em.cluster
-        r = read_multinomial_sentence_data
         pdf = em.multinomial_pdf
         param_init = em.multinomial_parameter_init
         param_update = em.multinomial_parameter_update
@@ -42,7 +43,6 @@ def main():
         enforce_single_selection(clusterer_selected)
         clusterer_selected = True
         clusterer = em.cluster
-        r = read_points
         pdf = em.isotropic_bivariate_normal_pdf
         param_init = em.isotropic_bivariate_normal_parameter_init
         param_update = em.isotropic_bivariate_normal_parameter_update
@@ -60,25 +60,30 @@ def main():
     if not clusterer_selected:
         print "Please select one clustering method."
         exit()
-
-    if not options.em:
-        precomputed_distances = False
-        if is_npy(f):
-            r = read_distance_matrix
-            precomputed_distances = True
+    
+    if em_multinomial:
+        counts = None
+        if not options.intermediate_in is None:
+            counts = get_data(datafile=i, datareader=read_counts_matrix)
         else:
-            r = (read_points if options.euclidean else read_queries)
-        distances = data = get_data(datafile=f, datareader=r)
-        if not precomputed_distances:
+            counts = count_bigrams(f, savefile=o)
+        clusters, centers = clusterer(counts, pdf, param_init, param_update, k=k)
+
+    elif em_gaussian:
+        data = get_data(datafile=f, datareader=read_points)
+        clusters, centers = clusterer(data, pdf, param_init, param_update, k=k)
+
+    elif options.kmedoids or options.spectral:
+        r = (read_points if options.euclidean else read_queries)
+        data  = get_data(datafile=f, datareader=r)
+        if not options.intermediate_in is None:
+            distances = get_data(datafile=i, datareader=read_distance_matrix)
+        else:     
             d = build_euclidean_distance_matrix if options.euclidean \
                                                 else build_tree_edit_distance_matrix
-            distances = compute_distances(data, distancer=d, savefile='distances.npy') 
+            distances = compute_distances(data, distancer=d, savefile=o) 
         clusters, centers = clusterer(distances, k=k)
-    
-    else:
-        data = get_data(datafile=f, datareader=r)
-        clusters, centers = clusterer(data, pdf, param_init, param_update, k=k)
-    
+        
     if options.euclidean:
         output_point_clusters(data, clusters, centers)
     else:
@@ -89,8 +94,12 @@ def parse_args():
     parser = OptionParser()
     parser.add_option("-k", "--num_clusters", dest="k", type="int",
                       help="number of clusters to look for")
-    parser.add_option("-f", "--file", dest="file", type="string", metavar="FILE",
+    parser.add_option("-f", "--file", dest="file", type="string", metavar="RAW_IN",
                       help="file containing the data to cluster (supported types: splunk queries and x,y coordinates)")
+    parser.add_option("-i", "--intermediate_in", dest="intermediate_in", type="string", metavar="INTERMEDIATE_IN",
+                      help="file containing intermediate data that has been preprocessed to speed later computations")
+    parser.add_option("-o", "--intermediate_out", dest="intermediate_out", type="string", metavar="INTERMEDIATE_OUT",
+                      help="file to write intermediate data, to speed later computations")
     parser.add_option("-e", "--em", 
                       action="store_true", default=False, dest="em",
                       help="run expectation-maximization on a data in FILE (defaults to n data points of four Gaussian x,y clusters)")
@@ -102,7 +111,7 @@ def parse_args():
                       help="run spectral clustering on data in FILE (defaults to n data points of four Gaussian x,y clusters)")
     parser.add_option("-q", "--queries", 
                       action="store_false", default=True, dest="euclidean",
-                      help="assume data is SPL queries (defaults to Euclidean x,y points)")
+                      help="assume data is SPL queries (defaults to Gaussian Euclidean x,y points)")
     return parser.parse_args()
 
 def enforce_single_selection(clusterer_selected):
@@ -113,6 +122,7 @@ def enforce_single_selection(clusterer_selected):
 def is_npy(filename):
     return (filename[filename.rfind('.'):] == '.npy')
 
+# DELETE
 def read_multinomial_sentence_data(datafile):
     with open(datafile) as data:
         for line in data.readline():
@@ -120,44 +130,74 @@ def read_multinomial_sentence_data(datafile):
                 float(line.split()[0])
                 return read_multinomial_counts(datafile)
             except ValueError:
-                return parse_raw_multinomial_sentence_data(datafile)
+                return count_bigrams(datafile)
                 break
             except IndexError:
                 continue
     print "Problem parsing data file. Check that file is not empty."
     exit()
 
-def parse_raw_multinomial_sentence_data(datafile):
+def read_counts_matrix(datafile):
+    return np.array(np.load(datafile))
+
+def count_bigrams(datafile, savefile=None):
+    if savefile is None:
+        savefile = 'bigrams.npy'
     word_idxs = get_word_idxs(datafile)
     d = len(word_idxs.keys())
     all_counts = []
     with open(datafile) as data:
         for line in data.readlines():
             counts = np.zeros((d,d))
-            words = line.split()
+            stages = line.split('|')
+            fragments = [stage.split() for stage in stages]
+            words = [fragment[0] for fragment in fragments]
+            print words
+            first = '^'
+            second = words[0]
+            print first, second
+            fidx = word_idxs[first]
+            sidx = word_idxs[second]
+            counts[fidx,sidx] += 1.
             for i in range(len(words)-1):
                 #fidx = word_idxs[words[i]]
                 #sidx = word_idxs[words[i+1]]
-                first = ''.join(['^', words[i]]) if (i == 0) else words[i]
-                second = ''.join([words[i+1], '$']) if (i+1 == len(words) - 1) else words[i+1]
+                #first = ''.join(['^', words[i]]) if (i == 0) else words[i]
+                #second = ''.join([words[i+1], '$']) if (i+1 == len(words)) else words[i+1]
+                first = words[i]
+                second = words[i+1]
+                print first, second
                 fidx = word_idxs[first]
                 sidx = word_idxs[second]
                 counts[fidx,sidx] += 1.
+            first = words[len(words)-1]
+            second = '$'
+            print first, second
+            fidx = word_idxs[first]
+            sidx = word_idxs[second]
+            counts[fidx,sidx] += 1.
             all_counts.append(counts) 
-    return np.array(all_counts)
+    all_counts = np.array(all_counts)
+    np.save(savefile, all_counts)    
+    return all_counts
 
 def get_word_idxs(datafile):
     unique_words = defaultdict(int)
     with open(datafile) as data:
         for line in data.readlines():
-            words = line.split()
+            stages = line.split('|')
+            fragments = [stage.split() for stage in stages]
+            words = [fragment[0] for fragment in fragments]
+            unique_words['^'] += 1
+            unique_words['$'] += 1
             for i in range(len(words)):
-                word = ''.join(['^',words[i]]) if (i == 0) else words[i]
-                word = ''.join([word, '$']) if (i == len(words) - 1) else word
-                unique_words[word] += 1
+                #word = ''.join(['^',words[i]]) if (i == 0) else words[i]
+                #word = ''.join([word, '$']) if (i == len(words) - 1) else word
+                unique_words[words[i]] += 1
     d = len(unique_words.keys())
     return dict(zip(unique_words.keys(), range(d)))
 
+# DELETE
 def read_multinomial_counts(datafile):
     all_counts = []
     with open(datafile) as data:
@@ -241,8 +281,9 @@ def get_data(datafile=TEST_FILE, datareader=read_points):
 
 def compute_distances(data, distancer=build_euclidean_distance_matrix, savefile=None):
     distances = distancer(data) 
-    if not savefile is None:
-        np.save(savefile, distances)    
+    if savefile is None:
+        savefile = 'distances.npy'
+    np.save(savefile, distances)    
     return distances
 
 def output_point_clusters(data, clusters, centers):

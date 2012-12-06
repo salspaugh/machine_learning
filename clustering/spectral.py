@@ -13,6 +13,7 @@ from scipy.cluster.vq import whiten, kmeans
 import matplotlib.pyplot as plt
 
 def cluster(distances, k=4, sigma=2.):
+    np.seterr(all='print')
     L = compute_special_L(distances, sigma)
     X = compute_special_eigenmatrix(L, k)
     Y = renormalize(X)

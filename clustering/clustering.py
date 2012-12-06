@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import random
 import spectral
+
+from collections import defaultdict
 from splparser.parser import parse as splparse
 from splparser.parser import SPLSyntaxError
 from zss.compare import distance as tree_dist
@@ -15,8 +17,74 @@ TEST_FILE = "points.dat"
 TEST_POINTS = 1000
 
 def main():
-    np.set_printoptions(linewidth=200, threshold=1000000)
     
+    np.set_printoptions(linewidth=200, threshold=1000000)
+
+    (options, args) = parse_args()
+
+    k = (4 if options.k is None else options.k)
+    f = (TEST_FILE if options.file is None else options.file)
+    
+    em_gaussian = (options.em and options.euclidean)
+    em_multinomial = (options.em and not options.euclidean)
+
+    clusterer_selected = False
+    
+    if em_multinomial:
+        clusterer_selected = True
+        clusterer = em.cluster
+        r = read_multinomial_sentence_data
+        pdf = em.multinomial_pdf
+        param_init = em.multinomial_parameter_init
+        param_update = em.multinomial_parameter_update
+    
+    if em_gaussian:
+        enforce_single_selection(clusterer_selected)
+        clusterer_selected = True
+        clusterer = em.cluster
+        r = read_points
+        pdf = em.isotropic_bivariate_normal_pdf
+        param_init = em.isotropic_bivariate_normal_parameter_init
+        param_update = em.isotropic_bivariate_normal_parameter_update
+    
+    if options.spectral:
+        enforce_single_selection(clusterer_selected)
+        clusterer_selected = True
+        clusterer = spectral.cluster
+    
+    if options.kmedoids:
+        enforce_single_selection(clusterer_selected)
+        clusterer_selected = True
+        clusterer = kmedoids.cluster
+    
+    if not clusterer_selected:
+        print "Please select one clustering method."
+        exit()
+
+    if not options.em:
+        precomputed_distances = False
+        if is_npy(f):
+            r = read_distance_matrix
+            precomputed_distances = True
+        else:
+            r = (read_points if options.euclidean else read_queries)
+        distances = data = get_data(datafile=f, datareader=r)
+        if not precomputed_distances:
+            d = build_euclidean_distance_matrix if options.euclidean \
+                                                else build_tree_edit_distance_matrix
+            distances = compute_distances(data, distancer=d, savefile='distances.npy') 
+        clusters, centers = clusterer(distances, k=k)
+    
+    else:
+        data = get_data(datafile=f, datareader=r)
+        clusters, centers = clusterer(data, pdf, param_init, param_update, k=k)
+    
+    if options.euclidean:
+        output_point_clusters(data, clusters, centers)
+    else:
+        output_query_clusters(f, clusters, centers)
+
+def parse_args():
     from optparse import OptionParser
     parser = OptionParser()
     parser.add_option("-k", "--num_clusters", dest="k", type="int",
@@ -35,54 +103,70 @@ def main():
     parser.add_option("-q", "--queries", 
                       action="store_false", default=True, dest="euclidean",
                       help="assume data is SPL queries (defaults to Euclidean x,y points)")
-    (options, args) = parser.parse_args()
+    return parser.parse_args()
 
-    precomputed_distances = False
-    f = (TEST_FILE if options.file is None else options.file)
-    if is_npy(f):
-        r = read_distance_matrix
-        precomputed_distances = True
-    else:
-        r = (read_points if options.euclidean else read_queries)
-    k = (4 if options.k is None else options.k)
-    
-    
-    clusterer = kmedoids.cluster
-    
-    if options.em and not options.kmedoids and not options.spectral:
-        clusterer = em.cluster
-        pdf = em.isotropic_bivariate_normal_pdf if options.euclidean else None
-        param_init = em.isotropic_bivariate_normal_parameter_init \
-                                if options.euclidean else None
-        param_update = em.isotropic_bivariate_normal_parameter_update \
-                                if options.euclidean else None
-    
-    else:
-        d = build_euclidean_distance_matrix if options.euclidean \
-                                            else build_tree_edit_distance_matrix
-        if options.kmedoids and not options.spectral and not options.em:
-            clusterer = kmedoids.cluster
-        elif options.spectral and not options.kmedoids and not options.em:
-            clusterer = spectral.cluster
-        else:
-            print "Please pick one clustering method."
-            exit()
-    
-    distances = data = get_data(datafile=f, datareader=r)
-    if not options.em:
-        if not precomputed_distances: # TODO(salspaugh): Take distances file as an argument.
-            distances = compute_distances(data, distancer=d, savefile='distances.npy') 
-        clusters, centers = clusterer(distances, k=k)
-    else:
-        clusters, centers = clusterer(data, pdf, param_init, param_update, k=k)
-    
-    output_results(data, clusters, centers, plot=options.euclidean)
-   
-    # TODO(salspaugh): Clean up option parsing!
-    # TODO(salspaugh): Data input error handling.
+def enforce_single_selection(clusterer_selected):
+    if clusterer_selected: 
+        print "Please select one clustering method."
+        exit()
 
 def is_npy(filename):
     return (filename[filename.rfind('.'):] == '.npy')
+
+def read_multinomial_sentence_data(datafile):
+    with open(datafile) as data:
+        for line in data.readline():
+            try:
+                float(line.split()[0])
+                return read_multinomial_counts(datafile)
+            except ValueError:
+                return parse_raw_multinomial_sentence_data(datafile)
+                break
+            except IndexError:
+                continue
+    print "Problem parsing data file. Check that file is not empty."
+    exit()
+
+def parse_raw_multinomial_sentence_data(datafile):
+    word_idxs = get_word_idxs(datafile)
+    d = len(word_idxs.keys())
+    all_counts = []
+    with open(datafile) as data:
+        for line in data.readlines():
+            counts = np.zeros((d,d))
+            words = line.split()
+            for i in range(len(words)-1):
+                #fidx = word_idxs[words[i]]
+                #sidx = word_idxs[words[i+1]]
+                first = ''.join(['^', words[i]]) if (i == 0) else words[i]
+                second = ''.join([words[i+1], '$']) if (i+1 == len(words) - 1) else words[i+1]
+                fidx = word_idxs[first]
+                sidx = word_idxs[second]
+                counts[fidx,sidx] += 1.
+            all_counts.append(counts) 
+    return np.array(all_counts)
+
+def get_word_idxs(datafile):
+    unique_words = defaultdict(int)
+    with open(datafile) as data:
+        for line in data.readlines():
+            words = line.split()
+            for i in range(len(words)):
+                word = ''.join(['^',words[i]]) if (i == 0) else words[i]
+                word = ''.join([word, '$']) if (i == len(words) - 1) else word
+                unique_words[word] += 1
+    d = len(unique_words.keys())
+    return dict(zip(unique_words.keys(), range(d)))
+
+def read_multinomial_counts(datafile):
+    all_counts = []
+    with open(datafile) as data:
+        for line in data.readlines():
+            counts = [float(elem) for elem in line.split()]
+            d = math.sqrt(len(counts))
+            counts = np.array(counts).reshape(d,d)
+            all_counts.append(counts)
+    return np.array(all_counts)
 
 def read_distance_matrix(datafile):
     return np.mat(np.load(datafile))
@@ -161,11 +245,13 @@ def compute_distances(data, distancer=build_euclidean_distance_matrix, savefile=
         np.save(savefile, distances)    
     return distances
 
-def output_results(data, clusters, centers, plot=False):
-    pass
-    print_results(data, clusters) # TODO: Check if this works for queries.
-    if plot:
-        plot_results(data, clusters, centers)
+def output_point_clusters(data, clusters, centers):
+    print_results(data, clusters)
+    plot_results(data, clusters, centers)
+
+def output_query_clusters(datafile, clusters, centers):
+    with open(datafile) as rawdata:
+        print_results(rawdata.readlines(), clusters)
 
 def print_results(data, clusters):
     for i in range(len(data)):

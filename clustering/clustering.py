@@ -1,10 +1,12 @@
 #!/usr/bin/env python
 
 import em
+import json
 import kmedoids
 import math
 import matplotlib.pyplot as plt
 import numpy as np
+import pygraphviz as pg
 import random
 import spectral
 
@@ -26,6 +28,7 @@ def main():
     f = (TEST_FILE if options.file is None else options.file)
     i = options.intermediate_in
     o = options.intermediate_out
+    d = options.distances_file
 
     em_gaussian = (options.em and options.euclidean)
     em_multinomial = (options.em and not options.euclidean)
@@ -61,14 +64,16 @@ def main():
         print "Please select one clustering method."
         exit()
     
+    distances = None
     if em_multinomial:
         counts = None
+        if not options.distances_file is None:
+            distances = get_data(datafile=d, datareader=read_distance_matrix)
         if not options.intermediate_in is None:
             counts = get_data(datafile=i, datareader=read_counts_matrix)
         else:
             counts = count_bigrams(f, savefile=o)
         clusters, centers = clusterer(counts, pdf, param_init, param_update, k=k)
-
     elif em_gaussian:
         data = get_data(datafile=f, datareader=read_points)
         clusters, centers = clusterer(data, pdf, param_init, param_update, k=k)
@@ -78,16 +83,18 @@ def main():
         data  = get_data(datafile=f, datareader=r)
         if not options.intermediate_in is None:
             distances = get_data(datafile=i, datareader=read_distance_matrix)
+        elif not options.distances_file is None:
+            distances = get_data(datafile=i, datareader=read_distance_matrix)
         else:     
             d = build_euclidean_distance_matrix if options.euclidean \
                                                 else build_tree_edit_distance_matrix
-            distances = compute_distances(data, distancer=d, savefile=o) 
+            distances = compute_distances(data, distancer=d, normalize=options.normalize, savefile=o) 
         clusters, centers = clusterer(distances, k=k)
         
     if options.euclidean:
         output_point_clusters(data, clusters, centers)
     else:
-        output_query_clusters(f, clusters, centers)
+        output_query_clusters(f, distances, clusters, centers)
 
 def parse_args():
     from optparse import OptionParser
@@ -100,6 +107,8 @@ def parse_args():
                       help="file containing intermediate data that has been preprocessed to speed later computations")
     parser.add_option("-o", "--intermediate_out", dest="intermediate_out", type="string", metavar="INTERMEDIATE_OUT",
                       help="file to write intermediate data, to speed later computations")
+    parser.add_option("-d", "--distances_file", dest="distances_file", type="string", metavar="DISTANCES_IN",
+                      help="file containing distances to use for plotting or otherwise")
     parser.add_option("-e", "--em", 
                       action="store_true", default=False, dest="em",
                       help="run expectation-maximization on a data in FILE (defaults to n data points of four Gaussian x,y clusters)")
@@ -112,6 +121,9 @@ def parse_args():
     parser.add_option("-q", "--queries", 
                       action="store_false", default=True, dest="euclidean",
                       help="assume data is SPL queries (defaults to Gaussian Euclidean x,y points)")
+    parser.add_option("-n", "--normalize",
+                      action="store_true", default=False, dest="normalize",
+                      help="normalize distances when distances are computed (only applies to spectral and kmedoids)")
     return parser.parse_args()
 
 def enforce_single_selection(clusterer_selected):
@@ -122,21 +134,6 @@ def enforce_single_selection(clusterer_selected):
 def is_npy(filename):
     return (filename[filename.rfind('.'):] == '.npy')
 
-# DELETE
-def read_multinomial_sentence_data(datafile):
-    with open(datafile) as data:
-        for line in data.readline():
-            try:
-                float(line.split()[0])
-                return read_multinomial_counts(datafile)
-            except ValueError:
-                return count_bigrams(datafile)
-                break
-            except IndexError:
-                continue
-    print "Problem parsing data file. Check that file is not empty."
-    exit()
-
 def read_counts_matrix(datafile):
     return np.array(np.load(datafile))
 
@@ -144,6 +141,7 @@ def count_bigrams(datafile, savefile=None):
     if savefile is None:
         savefile = 'bigrams.npy'
     word_idxs = get_word_idxs(datafile)
+    print json.dumps(word_idxs)
     d = len(word_idxs.keys())
     all_counts = []
     with open(datafile) as data:
@@ -152,29 +150,15 @@ def count_bigrams(datafile, savefile=None):
             stages = line.split('|')
             fragments = [stage.split() for stage in stages]
             words = [fragment[0] for fragment in fragments]
-            print words
-            first = '^'
-            second = words[0]
-            print first, second
-            fidx = word_idxs[first]
-            sidx = word_idxs[second]
+            fidx = word_idxs['^']
+            sidx = word_idxs[words[0]]
             counts[fidx,sidx] += 1.
             for i in range(len(words)-1):
-                #fidx = word_idxs[words[i]]
-                #sidx = word_idxs[words[i+1]]
-                #first = ''.join(['^', words[i]]) if (i == 0) else words[i]
-                #second = ''.join([words[i+1], '$']) if (i+1 == len(words)) else words[i+1]
-                first = words[i]
-                second = words[i+1]
-                print first, second
-                fidx = word_idxs[first]
-                sidx = word_idxs[second]
+                fidx = word_idxs[words[i]]
+                sidx = word_idxs[words[i+1]]
                 counts[fidx,sidx] += 1.
-            first = words[len(words)-1]
-            second = '$'
-            print first, second
-            fidx = word_idxs[first]
-            sidx = word_idxs[second]
+            fidx = word_idxs[words[len(words)-1]]
+            sidx = word_idxs['$']
             counts[fidx,sidx] += 1.
             all_counts.append(counts) 
     all_counts = np.array(all_counts)
@@ -191,25 +175,12 @@ def get_word_idxs(datafile):
             unique_words['^'] += 1
             unique_words['$'] += 1
             for i in range(len(words)):
-                #word = ''.join(['^',words[i]]) if (i == 0) else words[i]
-                #word = ''.join([word, '$']) if (i == len(words) - 1) else word
                 unique_words[words[i]] += 1
     d = len(unique_words.keys())
     return dict(zip(unique_words.keys(), range(d)))
 
-# DELETE
-def read_multinomial_counts(datafile):
-    all_counts = []
-    with open(datafile) as data:
-        for line in data.readlines():
-            counts = [float(elem) for elem in line.split()]
-            d = math.sqrt(len(counts))
-            counts = np.array(counts).reshape(d,d)
-            all_counts.append(counts)
-    return np.array(all_counts)
-
 def read_distance_matrix(datafile):
-    return np.mat(np.load(datafile))
+    return np.array(np.load(datafile))
 
 def read_points(datafile):
     points = []
@@ -252,24 +223,29 @@ def read_queries(datafile):
     print "Done parsing queries."
     return parsetrees
 
-def build_tree_edit_distance_matrix(parsetrees):
-    return build_distance_matrix(parsetrees, tree_dist)
+def build_tree_edit_distance_matrix(parsetrees, normalize=False):
+    return build_distance_matrix(parsetrees, tree_dist, normalize=normalize)
 
-def build_euclidean_distance_matrix(points):
-    return build_distance_matrix(points, euclidean_dist)
+def build_euclidean_distance_matrix(points, normalize=False):
+    return build_distance_matrix(points, euclidean_dist, normalize=normalize)
 
 def euclidean_dist(a, b):
     return math.sqrt((a[0] - b[0])**2 + (a[1] - b[1])**2)
 
-def build_distance_matrix(data, distfn):
+def build_distance_matrix(data, distfn, normalize=False):
     m = len(data)
     distances = np.zeros((m,m))
     i = j = 0.
+    max_distance = -1e10
     for i in range(m):
         for j in range(i+1, m): # The distance matrix is symmetric.
             p = data[i]
             q = data[j]
-            distances[i,j] = distances[j,i] = distfn(p, q)
+            distance = distfn(p, q)
+            max_distance = max(max_distance, distance)
+            distances[i,j] = distances[j,i] = distance
+    if normalize:
+        return distances / max_distance
     return distances
 
 def get_data(datafile=TEST_FILE, datareader=read_points):
@@ -279,8 +255,8 @@ def get_data(datafile=TEST_FILE, datareader=read_points):
         data = generate_random_point_clusters(datafile)
     return data
 
-def compute_distances(data, distancer=build_euclidean_distance_matrix, savefile=None):
-    distances = distancer(data) 
+def compute_distances(data, distancer=build_euclidean_distance_matrix, normalize=False, savefile=None):
+    distances = distancer(data, normalize=normalize) 
     if savefile is None:
         savefile = 'distances.npy'
     np.save(savefile, distances)    
@@ -288,17 +264,18 @@ def compute_distances(data, distancer=build_euclidean_distance_matrix, savefile=
 
 def output_point_clusters(data, clusters, centers):
     print_results(data, clusters)
-    plot_results(data, clusters, centers)
+    plot_euclidean_results(data, clusters, centers)
 
-def output_query_clusters(datafile, clusters, centers):
+def output_query_clusters(datafile, distances, clusters, centers):
     with open(datafile) as rawdata:
         print_results(rawdata.readlines(), clusters)
+    plot_query_results(distances, clusters)
 
 def print_results(data, clusters):
     for i in range(len(data)):
         print clusters[i], data[i]
 
-def plot_results(data, cluster_idxs, medoid_idxs):
+def plot_euclidean_results(data, cluster_idxs, medoid_idxs):
     data = np.array(data)
     colors = ['b', 'g', 'r', 'c', 'm', 'y']
     cluster_idx_count = 0
@@ -310,7 +287,39 @@ def plot_results(data, cluster_idxs, medoid_idxs):
         plt.plot(x, y, color=colors[cluster_idx_count], marker='o', linestyle='None')
         plt.plot(data[medoid_idx][0], data[medoid_idx][1], color='k', marker='o', linestyle='None')
         cluster_idx_count += 1
-    plt.savefig('clusters.png')
+    plt.savefig("clusters.png")
+
+def plot_query_results(distances, cluster_idxs):
+    colors = ['#006600','#990000','#3333CC','#000000', '#FFCC00']
+    shapes = ['circle', 'triangle', 'square', 'diamond', 'pentagon']
+    d = distances.shape[0]
+    seen_cluster_idxs = {}
+    G = pg.AGraph()
+    G.node_attr['style'] = 'filled'
+    G.node_attr['label'] = ' '
+    G.node_attr['height'] = .3
+    G.node_attr['width'] = .3
+    G.node_attr['fixedsize'] = 'true'
+    for node_idx in range(d):
+        c = colors[0]
+        cluster = int(cluster_idxs[node_idx])
+        if cluster in seen_cluster_idxs:  # already assigned a color
+            color_shape_idx = seen_cluster_idxs[cluster]
+        else:
+            color_shape_idx = len(seen_cluster_idxs.keys())
+            seen_cluster_idxs[cluster] = color_shape_idx
+        c = colors[color_shape_idx]
+        s = shapes[color_shape_idx]
+        G.add_node(node_idx, fillcolor=c, shape=s)    
+    for i in range(d):
+        for j in range(i+1, d):
+            if distances[i,j] > 0:
+                G.add_edge(i,j, len=distances[i,j]*10.)
+            else:
+                G.add_edge(i,j, len=.01)
+    G.edge_attr['style'] = 'setlinewidth(.001)'
+    G.layout()
+    G.draw("query_clusters.png")
 
 if __name__ == "__main__":
     main()

@@ -31,7 +31,9 @@ def cluster(distances, k=3):
 
 def assign_points_to_clusters(medoids, distances):
     distances_to_medoids = distances[:,medoids]
-    return medoids[np.argmin(distances_to_medoids, axis=1)]
+    clusters = medoids[np.argmin(distances_to_medoids, axis=1)]
+    clusters[medoids] = medoids
+    return clusters
 
 def compute_new_medoid(cluster, distances):
     mask = np.ones(distances.shape)
